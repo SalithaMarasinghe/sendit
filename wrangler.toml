@@ -1,0 +1,17 @@
+name = "sendit-api"
+main = "worker/src/index.ts"
+compatibility_date = "2024-03-10"
+
+[vars]
+AUTH_SECRET = "781227"
+MAX_UPLOAD_SIZE = 5368709120 # 5GB in bytes
+MAX_STORAGE_SIZE = 10737418240 # 10GB in bytes
+
+[[d1_databases]]
+binding = "DB"
+database_name = "sendit"
+database_id = "73afe3e6-af22-4437-846d-422ee4046e98"
+
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "sendit"
