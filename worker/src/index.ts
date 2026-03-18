@@ -59,13 +59,26 @@ export default {
 				return handleStorageStats(env);
 			}
 
+			if (path === "/clipboard" && request.method === "GET") {
+				return handleListClipboardEntries(env);
+			}
+
+			if (path === "/clipboard" && request.method === "POST") {
+				return handleCreateClipboardEntry(request, env);
+			}
+
+			if (path.startsWith("/clipboard/") && request.method === "DELETE") {
+				const id = path.split("/").pop();
+				return handleDeleteClipboardEntry(env, id);
+			}
+
 			if (path === "/files/upload" && request.method === "POST") {
 				return handleFileUpload(request, env);
 			}
 
 			if (path.startsWith("/files/") && request.method === "GET") {
 				const id = path.split("/").pop();
-				return handleFileDownload(env, id);
+				return handleFileDownload(request, env, id);
 			}
 
 			if (path.startsWith("/files/") && request.method === "PATCH") {
@@ -199,7 +212,7 @@ async function handleFileUpload(request: Request, env: Env) {
 	return jsonResponse({ success: true, id });
 }
 
-async function handleFileDownload(env: Env, id: string | undefined) {
+async function handleFileDownload(request: Request, env: Env, id: string | undefined) {
 	if (!id) return jsonResponse({ error: "Missing ID" }, 400);
 
 	const file: any = await env.DB.prepare("SELECT * FROM files WHERE id = ?").bind(id).first();
@@ -211,7 +224,9 @@ async function handleFileDownload(env: Env, id: string | undefined) {
 	const headers = new Headers();
 	object.writeHttpMetadata(headers);
 	headers.set("etag", object.httpEtag);
-	headers.set("Content-Disposition", `attachment; filename="${file.name}"`);
+	const url = new URL(request.url);
+	const isInline = url.searchParams.get("inline") === "1";
+	headers.set("Content-Disposition", `${isInline ? "inline" : "attachment"}; filename="${file.name}"`);
 
 	// Add CORS headers for iOS/Safari download support
 	headers.set("Access-Control-Allow-Origin", "*");
@@ -323,6 +338,67 @@ async function handleStorageStats(env: Env) {
 		usedBytes: stats?.used || 0,
 		maxBytes: parseInt(env.MAX_STORAGE_SIZE) || 10737418240,
 	});
+}
+
+async function handleListClipboardEntries(env: Env) {
+	const entries = await env.DB.prepare(
+		"SELECT id, content, created_at FROM clipboard_entries ORDER BY created_at DESC, id DESC"
+	).all();
+
+	return jsonResponse(entries.results);
+}
+
+async function handleCreateClipboardEntry(request: Request, env: Env) {
+	const { content } = await request.json() as { content?: string };
+
+	if (typeof content !== "string") {
+		return jsonResponse({ error: "Clipboard content must be text" }, 400);
+	}
+
+	if (!content.trim()) {
+		return jsonResponse({ error: "Clipboard text cannot be empty" }, 400);
+	}
+
+	if (content.length > 500000) {
+		return jsonResponse({ error: "Clipboard text is too large" }, 413);
+	}
+
+	const id = crypto.randomUUID();
+	await env.DB.prepare(
+		"INSERT INTO clipboard_entries (id, content) VALUES (?, ?)"
+	)
+		.bind(id, content)
+		.run();
+
+	const entry = await env.DB.prepare(
+		"SELECT id, content, created_at FROM clipboard_entries WHERE id = ?"
+	)
+		.bind(id)
+		.first();
+
+	return jsonResponse(entry, 201);
+}
+
+async function handleDeleteClipboardEntry(env: Env, id: string | undefined) {
+	if (!id) {
+		return jsonResponse({ error: "Missing ID" }, 400);
+	}
+
+	const existingEntry = await env.DB.prepare(
+		"SELECT id FROM clipboard_entries WHERE id = ?"
+	)
+		.bind(id)
+		.first();
+
+	if (!existingEntry) {
+		return jsonResponse({ error: "Clipboard entry not found" }, 404);
+	}
+
+	await env.DB.prepare("DELETE FROM clipboard_entries WHERE id = ?")
+		.bind(id)
+		.run();
+
+	return jsonResponse({ success: true });
 }
 
 // --- Helpers ---

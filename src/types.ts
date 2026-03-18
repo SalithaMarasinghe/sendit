@@ -36,3 +36,9 @@ export interface UploadProgress {
   status: 'uploading' | 'completed' | 'error';
   error?: string;
 }
+
+export interface ClipboardEntry {
+  id: string;
+  content: string;
+  created_at: string;
+}

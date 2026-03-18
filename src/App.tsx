@@ -4,6 +4,8 @@ import { FileBrowser } from "./components/FileBrowser";
 import { Uploader } from "./components/Uploader";
 import { Breadcrumbs } from "./components/Breadcrumbs";
 import { IOSInstallHint } from "./components/iOSInstallHint";
+import { ClipboardPanel } from "./components/ClipboardPanel";
+import { FilePreviewModal } from "./components/FilePreviewModal";
 import { 
   isUnlocked, 
   listItems,
@@ -11,9 +13,13 @@ import {
   renameItem, 
   deleteItem,
   getStorageStats,
+  listClipboardEntries,
+  createClipboardEntry,
+  deleteClipboardEntry,
+  ClipboardUnavailableError,
   API_ROOT
 } from "./api";
-import type { Folder, FileItem, Breadcrumb } from "./types";
+import type { Folder, FileItem, Breadcrumb, ClipboardEntry } from "./types";
 import { LogOut, RefreshCw, HardDrive } from "lucide-react";
 
 function App() {
@@ -21,10 +27,20 @@ function App() {
   const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
   const [folders, setFolders] = useState<Folder[]>([]);
   const [files, setFiles] = useState<FileItem[]>([]);
+  const [previewFile, setPreviewFile] = useState<FileItem | null>(null);
+  const [clipboardEntries, setClipboardEntries] = useState<ClipboardEntry[]>([]);
   const [breadcrumbs, setBreadcrumbs] = useState<Breadcrumb[]>([]);
   const [storageStats, setStorageStats] = useState<{ usedBytes: number, maxBytes: number } | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [downloadingFileId, setDownloadingFileId] = useState<string | null>(null);
+  const [isSavingClipboard, setIsSavingClipboard] = useState(false);
+  const [isCopyingClipboard, setIsCopyingClipboard] = useState(false);
+  const [copyingClipboardEntryId, setCopyingClipboardEntryId] = useState<string | null>(null);
+  const [deletingClipboardEntryId, setDeletingClipboardEntryId] = useState<string | null>(null);
   const [error, setError] = useState("");
+  const [clipboardError, setClipboardError] = useState("");
+  const [clipboardStatus, setClipboardStatus] = useState("");
+  const [isClipboardAvailable, setIsClipboardAvailable] = useState(true);
 
   const fetchData = useCallback(async () => {
     if (!unlocked) return;
@@ -39,6 +55,21 @@ function App() {
       setFiles(itemsData.files);
       setBreadcrumbs(itemsData.breadcrumbs);
       setStorageStats(statsData);
+
+      try {
+        const clipboardData = await listClipboardEntries();
+        setClipboardEntries(clipboardData);
+        setClipboardError("");
+        setIsClipboardAvailable(true);
+      } catch (err: any) {
+        if (err instanceof ClipboardUnavailableError) {
+          setClipboardEntries([]);
+          setClipboardError("Clipboard backend is not deployed yet.");
+          setIsClipboardAvailable(false);
+        } else {
+          throw err;
+        }
+      }
     } catch (err: any) {
       if (err.message === "Unauthorized") {
         handleLogout();
@@ -53,6 +84,16 @@ function App() {
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  useEffect(() => {
+    if (!clipboardStatus) return;
+
+    const timer = window.setTimeout(() => {
+      setClipboardStatus("");
+    }, 2500);
+
+    return () => window.clearTimeout(timer);
+  }, [clipboardStatus]);
 
   const handleCreateFolder = async () => {
     const name = window.prompt("Enter folder name:");
@@ -86,22 +127,164 @@ function App() {
     }
   };
 
-  const handleDownload = (id: string) => {
+  const handleDownload = async (file: FileItem) => {
     const secret = localStorage.getItem("sendit_secret");
-    const downloadUrl = `${API_ROOT}/files/${id}?secret=${secret}`;
-    
-    // Create a temporary link to trigger download (more reliable on iOS)
-    const link = document.createElement('a');
-    link.href = downloadUrl;
-    link.target = '_blank';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    if (!secret) {
+      handleLogout();
+      return;
+    }
+
+    setDownloadingFileId(file.id);
+
+    try {
+      const res = await fetch(`${API_ROOT}/files/${file.id}`, {
+        headers: {
+          Authorization: secret,
+        },
+      });
+
+      if (res.status === 401) {
+        handleLogout();
+        return;
+      }
+
+      if (!res.ok) {
+        throw new Error("Failed to download file");
+      }
+
+      const blob = await res.blob();
+      const fileBlob = blob.type ? blob : new Blob([blob], {
+        type: file.mime_type || "application/octet-stream",
+      });
+      const sharedFile = new File([fileBlob], file.name, {
+        type: fileBlob.type || file.mime_type || "application/octet-stream",
+      });
+
+      if (canShareFile(sharedFile)) {
+        try {
+          await navigator.share({
+            files: [sharedFile],
+            title: file.name,
+          });
+          return;
+        } catch (err: any) {
+          if (err?.name === "AbortError") {
+            return;
+          }
+        }
+      }
+
+      downloadBlob(fileBlob, file.name);
+    } catch (err: any) {
+      alert(err.message || "Failed to download file");
+    } finally {
+      setDownloadingFileId(null);
+    }
+  };
+
+  const handlePreviewFile = (file: FileItem) => {
+    setPreviewFile(file);
   };
 
   const handleLogout = () => {
     localStorage.removeItem("sendit_secret");
     setUnlocked(false);
+  };
+
+  const handleClipboardSave = async (content: string) => {
+    if (!isClipboardAvailable) {
+      setClipboardError("Deploy the worker update first, then paste again.");
+      return;
+    }
+
+    setIsSavingClipboard(true);
+    setClipboardError("");
+
+    try {
+      const entry = await createClipboardEntry(content);
+      setClipboardEntries((prev) => [entry, ...prev]);
+      setClipboardStatus("Saved to clipboard.");
+    } catch (err: any) {
+      if (err.message === "Unauthorized") {
+        handleLogout();
+        return;
+      }
+
+      if (err instanceof ClipboardUnavailableError) {
+        setIsClipboardAvailable(false);
+        setClipboardError("Clipboard backend is not deployed yet.");
+        return;
+      }
+
+      setClipboardError(err.message || "Failed to save clipboard text");
+      throw err;
+    } finally {
+      setIsSavingClipboard(false);
+    }
+  };
+
+  const handleCopyAllClipboard = async () => {
+    if (clipboardEntries.length === 0) return;
+
+    setIsCopyingClipboard(true);
+    setClipboardError("");
+
+    try {
+      const combinedText = clipboardEntries
+        .slice()
+        .reverse()
+        .map((entry) => entry.content)
+        .join("\n\n");
+
+      await copyText(combinedText);
+      setClipboardStatus("Copied all saved clipboard text.");
+    } catch (err: any) {
+      setClipboardError(err.message || "Failed to copy clipboard text");
+    } finally {
+      setIsCopyingClipboard(false);
+    }
+  };
+
+  const handleCopyClipboardEntry = async (entry: ClipboardEntry) => {
+    setCopyingClipboardEntryId(entry.id);
+    setClipboardError("");
+
+    try {
+      await copyText(entry.content);
+      setClipboardStatus("Copied clipboard text.");
+    } catch (err: any) {
+      setClipboardError(err.message || "Failed to copy clipboard text");
+    } finally {
+      setCopyingClipboardEntryId(null);
+    }
+  };
+
+  const handleDeleteClipboardEntry = async (entryId: string) => {
+    if (!window.confirm("Delete this saved clipboard text?")) return;
+
+    setDeletingClipboardEntryId(entryId);
+    setClipboardError("");
+
+    try {
+      await deleteClipboardEntry(entryId);
+      setClipboardEntries((prev) => prev.filter((entry) => entry.id !== entryId));
+      setClipboardStatus("Deleted clipboard text.");
+    } catch (err: any) {
+      if (err.message === "Unauthorized") {
+        handleLogout();
+        return;
+      }
+
+      if (err instanceof ClipboardUnavailableError) {
+        setIsClipboardAvailable(false);
+        setClipboardError("Clipboard backend is not deployed yet.");
+        return;
+      }
+
+      setClipboardError(err.message || "Failed to delete clipboard text");
+    } finally {
+      setDeletingClipboardEntryId(null);
+    }
   };
 
   if (!unlocked) {
@@ -158,6 +341,20 @@ function App() {
             />
           </section>
 
+          <ClipboardPanel
+            entries={clipboardEntries}
+            error={clipboardError}
+            statusMessage={clipboardStatus}
+            isSaving={isSavingClipboard}
+            isCopying={isCopyingClipboard}
+            copyingEntryId={copyingClipboardEntryId}
+            deletingEntryId={deletingClipboardEntryId}
+            onPasteText={handleClipboardSave}
+            onCopyAll={handleCopyAllClipboard}
+            onCopyEntry={handleCopyClipboardEntry}
+            onDeleteEntry={handleDeleteClipboardEntry}
+          />
+
           <section className="hidden lg:block bg-zinc-900/30 border border-zinc-900 p-5 rounded-3xl">
             <h3 className="text-sm font-semibold text-zinc-400 mb-4">Storage Info</h3>
             <div className="space-y-3">
@@ -200,13 +397,25 @@ function App() {
             folders={folders}
             files={files}
             onNavigate={setCurrentFolderId}
+            onPreview={handlePreviewFile}
             onRename={handleRename}
             onDelete={handleDelete}
             onDownload={handleDownload}
             onCreateFolder={handleCreateFolder}
+            downloadingFileId={downloadingFileId}
           />
         </div>
       </main>
+
+      {previewFile && (
+        <FilePreviewModal
+          file={previewFile}
+          previewUrl={buildFilePreviewUrl(previewFile.id)}
+          onClose={() => setPreviewFile(null)}
+          onDownload={handleDownload}
+          isDownloading={downloadingFileId === previewFile.id}
+        />
+      )}
 
       {/* Footer */}
       <footer className="py-8 text-center border-t border-zinc-900 mt-12">
@@ -226,5 +435,59 @@ const formatSize = (bytes: number) => {
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
 };
+
+async function copyText(value: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+
+  const textArea = document.createElement("textarea");
+  textArea.value = value;
+  textArea.setAttribute("readonly", "");
+  textArea.style.position = "fixed";
+  textArea.style.opacity = "0";
+  document.body.appendChild(textArea);
+  textArea.select();
+
+  const succeeded = document.execCommand("copy");
+  document.body.removeChild(textArea);
+
+  if (!succeeded) {
+    throw new Error("Clipboard copy is not supported in this browser");
+  }
+}
+
+function canShareFile(file: File) {
+  return typeof navigator.share === "function"
+    && typeof navigator.canShare === "function"
+    && navigator.canShare({ files: [file] });
+}
+
+function downloadBlob(blob: Blob, fileName: string) {
+  const objectUrl = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = objectUrl;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+
+  window.setTimeout(() => {
+    URL.revokeObjectURL(objectUrl);
+  }, 1000);
+}
+
+function buildFilePreviewUrl(fileId: string) {
+  const secret = localStorage.getItem("sendit_secret");
+  const url = new URL(`${API_ROOT}/files/${fileId}`);
+
+  if (secret) {
+    url.searchParams.set("secret", secret);
+  }
+
+  url.searchParams.set("inline", "1");
+  return url.toString();
+}
 
 export default App;

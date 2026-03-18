@@ -1,7 +1,15 @@
-import type { ItemsResponse } from "./types";
+import type { ClipboardEntry, ItemsResponse } from "./types";
 
-export const API_ROOT = "https://sendit-api.sendit-network.workers.dev";
+const configuredApiRoot = import.meta.env.VITE_API_URL?.trim();
+export const API_ROOT = configuredApiRoot || "https://sendit-api.sendit-network.workers.dev";
 console.log("Sendit v1.1.0 - API_ROOT:", API_ROOT);
+
+export class ClipboardUnavailableError extends Error {
+  constructor(message = "Clipboard feature is not available on the server yet") {
+    super(message);
+    this.name = "ClipboardUnavailableError";
+  }
+}
 
 export const getAuthSecret = () => localStorage.getItem("sendit_secret") || "";
 export const setAuthSecret = (secret: string) => localStorage.setItem("sendit_secret", secret);
@@ -120,4 +128,75 @@ export async function getStorageStats(): Promise<{ usedBytes: number, maxBytes: 
     console.error("Storage stats error:", err);
     return { usedBytes: 0, maxBytes: 10737418240 }; // Fallback to 10GB
   }
+}
+
+export async function listClipboardEntries(): Promise<ClipboardEntry[]> {
+  const res = await fetch(`${API_ROOT}/clipboard`, { headers: getHeaders() });
+  if (res.status === 401) {
+    throw new Error("Unauthorized");
+  }
+  if (res.status === 404) {
+    throw new ClipboardUnavailableError();
+  }
+  if (!res.ok) {
+    throw new Error("Failed to fetch clipboard entries");
+  }
+  return res.json();
+}
+
+export async function createClipboardEntry(content: string): Promise<ClipboardEntry> {
+  const res = await fetch(`${API_ROOT}/clipboard`, {
+    method: "POST",
+    headers: getHeaders(),
+    body: JSON.stringify({ content }),
+  });
+
+  if (res.status === 401) {
+    throw new Error("Unauthorized");
+  }
+
+  if (res.status === 404) {
+    throw new ClipboardUnavailableError();
+  }
+
+  if (!res.ok) {
+    const data = await res.json();
+    throw new Error(data.error || "Failed to save clipboard text");
+  }
+
+  return res.json();
+}
+
+export async function deleteClipboardEntry(id: string) {
+  const res = await fetch(`${API_ROOT}/clipboard/${id}`, {
+    method: "DELETE",
+    headers: getHeaders(),
+  });
+
+  if (res.status === 401) {
+    throw new Error("Unauthorized");
+  }
+
+  if (res.status === 404) {
+    let data: { error?: string } | null = null;
+
+    try {
+      data = await res.json();
+    } catch {
+      data = null;
+    }
+
+    if (data?.error === "Clipboard entry not found") {
+      throw new Error("Clipboard entry not found");
+    }
+
+    throw new ClipboardUnavailableError();
+  }
+
+  if (!res.ok) {
+    const data = await res.json();
+    throw new Error(data.error || "Failed to delete clipboard text");
+  }
+
+  return res.json();
 }

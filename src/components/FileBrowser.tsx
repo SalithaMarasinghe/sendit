@@ -13,7 +13,8 @@ import {
   Image as ImageIcon,
   Video,
   Music,
-  Plus
+  Plus,
+  Loader2
 } from "lucide-react";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
@@ -26,10 +27,12 @@ interface FileBrowserProps {
   folders: Folder[];
   files: FileItem[];
   onNavigate: (id: string) => void;
+  onPreview: (file: FileItem) => void;
   onRename: (type: 'file' | 'folder', id: string, name: string) => void;
   onDelete: (type: 'file' | 'folder', id: string) => void;
-  onDownload: (id: string) => void;
+  onDownload: (file: FileItem) => void;
   onCreateFolder: () => void;
+  downloadingFileId?: string | null;
 }
 
 type SortKey = 'name' | 'size' | 'date';
@@ -38,10 +41,12 @@ export function FileBrowser({
   folders, 
   files, 
   onNavigate, 
+  onPreview,
   onRename, 
   onDelete, 
   onDownload,
-  onCreateFolder
+  onCreateFolder,
+  downloadingFileId
 }: FileBrowserProps) {
   const [search, setSearch] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>('name');
@@ -183,6 +188,7 @@ export function FileBrowser({
               <div 
                 key={file.id} 
                 className="group bg-zinc-900/40 border border-zinc-900 p-4 rounded-2xl hover:bg-zinc-800/50 hover:border-zinc-700 transition-all cursor-pointer relative"
+                onClick={() => onPreview(file)}
               >
                 <div className="flex items-start justify-between">
                     <div className="w-12 h-12 bg-zinc-800 rounded-xl flex items-center justify-center border border-zinc-700 mb-3 group-hover:scale-105 transition-transform">
@@ -201,8 +207,8 @@ export function FileBrowser({
                 {/* Context Menu Placeholder */}
                 {activeMenu?.id === file.id && activeMenu.type === 'file' && (
                   <div className="absolute right-4 top-12 bg-zinc-900 border border-zinc-800 rounded-xl shadow-2xl z-20 py-1 min-w-[140px] animate-in fade-in zoom-in duration-200">
-                    <button onClick={(e) => { e.stopPropagation(); onDownload(file.id); setActiveMenu(null); }} className="w-full text-left px-4 py-2 text-sm text-emerald-500 hover:bg-emerald-500/10 flex items-center gap-2">
-                        <Download size={14} /> Download
+                    <button onClick={(e) => { e.stopPropagation(); onDownload(file); setActiveMenu(null); }} className="w-full text-left px-4 py-2 text-sm text-emerald-500 hover:bg-emerald-500/10 flex items-center gap-2">
+                        {downloadingFileId === file.id ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />} Download
                     </button>
                     <button onClick={(e) => { e.stopPropagation(); onRename('file', file.id, file.name); setActiveMenu(null); }} className="w-full text-left px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-800 flex items-center gap-2">
                         <Edit2 size={14} /> Rename
